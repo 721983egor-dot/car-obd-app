@@ -5,10 +5,22 @@ import { createSeedStore } from './seed';
 const STORAGE_KEY = 'car.garage.v1';
 
 let memoryCache: GarageStore | null = null;
+let storageAvailable: boolean | null = null;
 const listeners = new Set<() => void>();
 
 function notify() {
   listeners.forEach((l) => l());
+}
+
+async function canUseStorage(): Promise<boolean> {
+  if (storageAvailable !== null) return storageAvailable;
+  try {
+    await AsyncStorage.getItem(STORAGE_KEY);
+    storageAvailable = true;
+  } catch {
+    storageAvailable = false;
+  }
+  return storageAvailable;
 }
 
 export function subscribeGarage(listener: () => void): () => void {
@@ -18,17 +30,19 @@ export function subscribeGarage(listener: () => void): () => void {
 
 export async function loadGarage(): Promise<GarageStore> {
   if (memoryCache) return memoryCache;
-  try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as GarageStore;
-      if (parsed?.version === 1 && Array.isArray(parsed.cars) && Array.isArray(parsed.events)) {
-        memoryCache = parsed;
-        return parsed;
+  if (await canUseStorage()) {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as GarageStore;
+        if (parsed?.version === 1 && Array.isArray(parsed.cars) && Array.isArray(parsed.events)) {
+          memoryCache = parsed;
+          return parsed;
+        }
       }
+    } catch {
+      storageAvailable = false;
     }
-  } catch {
-    /* fall through to seed */
   }
   const seed = createSeedStore();
   await persist(seed);
@@ -37,7 +51,13 @@ export async function loadGarage(): Promise<GarageStore> {
 
 async function persist(store: GarageStore): Promise<void> {
   memoryCache = store;
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  if (await canUseStorage()) {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    } catch {
+      storageAvailable = false;
+    }
+  }
   notify();
 }
 
