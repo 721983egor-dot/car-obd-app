@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "Car OBD",
+    "slug": "car-obd-app",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "scheme": "car-obd",
+    "plugins": [
+      "expo-dev-client",
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": ["central"],
+          "bluetoothAlwaysPermission": "Приложению нужен Bluetooth для связи с OBD-адаптером."
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26
+          }
+        }
+      ]
+    ],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "ru.car.obd.test",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "Нужен Bluetooth для OBD-адаптера.",
+        "NSBluetoothPeripheralUsageDescription": "Нужен Bluetooth для OBD-адаптера."
+      }
+    },
+    "android": {
+      "package": "ru.car.obd.test",
+      "adaptiveIcon": {
+        "backgroundColor": "#1C1F24",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "product": "Car companion OBD test",
+      "phase": "post-mvp companion spike"
+    }
+  }
+}
