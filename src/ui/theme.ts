@@ -1,0 +1,22 @@
+/** Graphite + amber design tokens for Car OBD companion. */
+export const colors = {
+  bg: '#1C1F24',
+  bgElevated: '#242830',
+  surface: '#2A2F36',
+  surfaceAlt: '#323842',
+  border: '#3A4048',
+  borderSoft: '#2F343C',
+  text: '#F2F3F5',
+  textMuted: '#9AA0A6',
+  textDim: '#6B7280',
+  accent: '#E8A317',
+  accentDim: '#B07A12',
+  accentSoft: 'rgba(232, 163, 23, 0.14)',
+  success: '#5B9A6A',
+  successSoft: 'rgba(91, 154, 106, 0.16)',
+  danger: '#F87171',
+  dangerSoft: '#3A2222',
+  dangerBorder: '#7F3A3A',
+  monoBg: '#12151A',
+  ok: '#7CB88A',
+} as const;
