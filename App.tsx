@@ -155,6 +155,43 @@ export default function App() {
     [session],
   );
 
+  const reread = useCallback(async () => {
+    if (!session || !selected) return;
+    setBusy(true);
+    setError(null);
+    setStatus('Повторное чтение…');
+    try {
+      const vinResult = await session.readVin();
+      setVin(vinResult);
+      appendRaw(setRawLog, '0902', vinResult.raw);
+      const pidResult = await session.readStandardPids();
+      setPids(pidResult.parsed);
+      pidResult.raw.forEach((r) => appendRaw(setRawLog, r.command, r.raw));
+      const snap: ObdReadingSnapshot = {
+        recordedAt: new Date().toISOString(),
+        vin: vinResult.vin,
+        rpm: pidResult.rpm,
+        speedKmh: pidResult.speedKmh,
+        coolantTempC: pidResult.coolantTempC,
+        rawPids: pidResult.raw,
+        device: {
+          id: selected.id,
+          name: selected.name,
+          transport: selected.transport,
+        },
+      };
+      setSnapshot(snap);
+      const { queuedId: qid } = await readingsSync.enqueue('local-car-demo', snap);
+      setQueuedId(qid);
+      setStatus('Готово (повтор).');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStatus('Ошибка повторного чтения');
+    } finally {
+      setBusy(false);
+    }
+  }, [session, selected]);
+
   const disconnect = useCallback(async () => {
     setBusy(true);
     try {
