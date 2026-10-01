@@ -40,12 +40,28 @@ export interface VinResult {
   note?: string;
 }
 
+/** Diagnostic Trouble Code (Mode 03). */
+export interface DtcCode {
+  code: string;
+  descriptionRu: string | null;
+}
+
+export interface DtcResult {
+  codes: DtcCode[];
+  raw: string;
+  note?: string;
+}
+
 export interface ObdReadingSnapshot {
   recordedAt: string;
   vin: string | null;
   rpm: number | null;
   speedKmh: number | null;
   coolantTempC: number | null;
+  batteryVoltage: number | null;
+  dtcs: DtcCode[];
+  parameters: ParsedPidValue[];
+  supportedPids: string[];
   rawPids: RawPidResponse[];
   device?: Pick<ObdDevice, 'id' | 'name' | 'transport'>;
 }

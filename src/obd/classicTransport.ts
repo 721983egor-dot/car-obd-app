@@ -1,9 +1,12 @@
 import type { ObdDevice, ObdTransport } from './types';
 
+type RnBtDevice = { id?: string; address: string; name?: string; bonded?: boolean };
+
 type RnBluetoothClassic = {
   isBluetoothEnabled: () => Promise<boolean>;
   requestBluetoothEnabled?: () => Promise<boolean>;
-  startDiscovery: () => Promise<Array<{ id?: string; address: string; name?: string; bonded?: boolean }>>;
+  getBondedDevices?: () => Promise<RnBtDevice[]>;
+  startDiscovery: () => Promise<RnBtDevice[]>;
   cancelDiscovery: () => Promise<boolean>;
   connectToDevice: (address: string) => Promise<{ address: string; name?: string }>;
   disconnectFromDevice?: (address: string) => Promise<boolean>;
@@ -56,15 +59,15 @@ export class ClassicObdTransport implements ObdTransport {
     const bt = this.loadModule();
     if (!bt) {
       throw new Error(
-        'Модуль Classic BT недоступен. Соберите Dev Client: npx expo prebuild && npx expo run:android',
+        'Модуль Classic BT недоступен. Expo Go не умеет настоящий Bluetooth. Соберите Dev Client: npx expo prebuild && npx expo run:android',
       );
     }
     try {
       if (bt.requestBluetoothEnabled) {
         await bt.requestBluetoothEnabled();
       }
-      const devices = await bt.startDiscovery();
-      for (const d of devices) {
+
+      const emit = (d: RnBtDevice, bonded: boolean) => {
         const name = d.name ?? d.address;
         const looksObd = /obd|elm|obdii|obd-ii|vgate|icar/i.test(name);
         onDevice({
@@ -72,8 +75,23 @@ export class ClassicObdTransport implements ObdTransport {
           name: looksObd ? name : `${name} (BT)`,
           address: d.address,
           transport: 'classic',
-          meta: { bonded: Boolean(d.bonded) },
+          meta: { bonded },
         });
+      };
+
+      // Paired adapters first — typical ELM327 flow after phone Settings pairing
+      if (bt.getBondedDevices) {
+        try {
+          const bonded = await bt.getBondedDevices();
+          for (const d of bonded) emit(d, true);
+        } catch {
+          /* discovery below still helps */
+        }
+      }
+
+      const devices = await bt.startDiscovery();
+      for (const d of devices) {
+        emit(d, Boolean(d.bonded));
       }
     } catch (e) {
       throw new Error(

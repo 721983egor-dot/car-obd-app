@@ -12,6 +12,8 @@ import {
 import {
   createTransport,
   ObdSession,
+  type DtcCode,
+  type DtcResult,
   type ObdDevice,
   type ObdReadingSnapshot,
   type ParsedPidValue,
@@ -24,25 +26,25 @@ type Step = 'transport' | 'scan' | 'connected' | 'results';
 
 const TRANSPORTS: Array<{ kind: TransportKind; title: string; hint: string }> = [
   {
-    kind: 'mock',
-    title: 'Симулятор',
-    hint: 'Без адаптера — проверка экранов (Expo Go ок)',
-  },
-  {
     kind: 'classic',
-    title: 'Bluetooth Classic',
-    hint: 'Типичный дешёвый ELM327 (SPP). Нужен Dev Client',
+    title: 'Bluetooth Classic (основной)',
+    hint: 'Типичный дешёвый ELM327 (SPP). Нужен Dev Client — Expo Go не умеет',
   },
   {
     kind: 'ble',
     title: 'Bluetooth LE',
-    hint: 'Только BLE-адаптеры (FFF0/NUS). Нужен Dev Client',
+    hint: 'Только если адаптер реально BLE (FFF0/NUS). Нужен Dev Client',
+  },
+  {
+    kind: 'mock',
+    title: 'Симулятор',
+    hint: 'Без адаптера — проверка экранов (Expo Go ок)',
   },
 ];
 
 export default function App() {
   const [step, setStep] = useState<Step>('transport');
-  const [kind, setKind] = useState<TransportKind>('mock');
+  const [kind, setKind] = useState<TransportKind>('classic');
   const [session, setSession] = useState<ObdSession | null>(null);
   const [devices, setDevices] = useState<ObdDevice[]>([]);
   const [selected, setSelected] = useState<ObdDevice | null>(null);
@@ -50,8 +52,12 @@ export default function App() {
   const [status, setStatus] = useState('Выберите тип подключения');
   const [error, setError] = useState<string | null>(null);
   const [vin, setVin] = useState<VinResult | null>(null);
+  const [dtc, setDtc] = useState<DtcResult | null>(null);
   const [pids, setPids] = useState<ParsedPidValue[]>([]);
+  const [supportedPids, setSupportedPids] = useState<string[]>([]);
   const [rawLog, setRawLog] = useState<string[]>([]);
+  const [showRaw, setShowRaw] = useState(false);
+  const [expandedRawPid, setExpandedRawPid] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<ObdReadingSnapshot | null>(null);
   const [queuedId, setQueuedId] = useState<string | null>(null);
 
@@ -71,7 +77,7 @@ export default function App() {
     const available = await s.isAvailable();
     if (!available && next !== 'mock') {
       setError(
-        'Транспорт недоступен: включите Bluetooth и соберите приложение через Expo Dev Client (не Expo Go). Можно продолжить с симулятором.',
+        'Транспорт недоступен: включите Bluetooth и соберите приложение через npx expo run:android (Dev Client). Expo Go настоящий BT не умеет. Можно продолжить с симулятором.',
       );
     }
   }, []);
@@ -89,7 +95,6 @@ export default function App() {
           return [...prev, device];
         });
       });
-      // Classic discovery is one-shot; BLE keeps scanning until stop
       if (kind === 'classic' || kind === 'mock') {
         setStatus('Сканирование завершено. Выберите адаптер.');
       } else {
@@ -103,6 +108,47 @@ export default function App() {
     }
   }, [session, kind]);
 
+  const applyReadResults = useCallback(
+    async (device: ObdDevice, s: ObdSession) => {
+      setStatus('Инициализация… VIN…');
+      const vinResult = await s.readVin();
+      setVin(vinResult);
+      appendRaw(setRawLog, '0902', vinResult.raw);
+
+      setStatus('Чтение ошибок (DTC Mode 03)…');
+      const dtcResult = await s.readDtcs();
+      setDtc(dtcResult);
+      appendRaw(setRawLog, '03', dtcResult.raw);
+
+      setStatus('Опрос поддерживаемых PID и чтение параметров…');
+      const pidResult = await s.readAllParameters();
+      setPids(pidResult.parsed);
+      setSupportedPids(pidResult.supportedPids);
+      pidResult.raw.forEach((r) => appendRaw(setRawLog, r.command, r.raw));
+
+      const snap: ObdReadingSnapshot = {
+        recordedAt: new Date().toISOString(),
+        vin: vinResult.vin,
+        rpm: pidResult.rpm,
+        speedKmh: pidResult.speedKmh,
+        coolantTempC: pidResult.coolantTempC,
+        batteryVoltage: pidResult.batteryVoltage,
+        dtcs: dtcResult.codes,
+        parameters: pidResult.parsed,
+        supportedPids: pidResult.supportedPids,
+        rawPids: pidResult.raw,
+        device: { id: device.id, name: device.name, transport: device.transport },
+      };
+      setSnapshot(snap);
+
+      const { queuedId: qid } = await readingsSync.enqueue('local-car-demo', snap);
+      setQueuedId(qid);
+      setStatus('Готово. Данные ниже (синхронизация — заглушка).');
+      setStep('results');
+    },
+    [],
+  );
+
   const connectAndRead = useCallback(
     async (device: ObdDevice) => {
       if (!session) return;
@@ -110,8 +156,12 @@ export default function App() {
       setError(null);
       setSelected(device);
       setVin(null);
+      setDtc(null);
       setPids([]);
+      setSupportedPids([]);
       setRawLog([]);
+      setShowRaw(false);
+      setExpandedRawPid(null);
       setSnapshot(null);
       setQueuedId(null);
       setStep('connected');
@@ -119,32 +169,7 @@ export default function App() {
       try {
         await session.stopScan();
         await session.connect(device);
-        setStatus('Инициализация ELM327… VIN…');
-        const vinResult = await session.readVin();
-        setVin(vinResult);
-        appendRaw(setRawLog, '0902', vinResult.raw);
-
-        setStatus('Чтение PID (RPM, скорость, ОЖ)…');
-        const pidResult = await session.readStandardPids();
-        setPids(pidResult.parsed);
-        pidResult.raw.forEach((r) => appendRaw(setRawLog, r.command, r.raw));
-
-        const snap: ObdReadingSnapshot = {
-          recordedAt: new Date().toISOString(),
-          vin: vinResult.vin,
-          rpm: pidResult.rpm,
-          speedKmh: pidResult.speedKmh,
-          coolantTempC: pidResult.coolantTempC,
-          rawPids: pidResult.raw,
-          device: { id: device.id, name: device.name, transport: device.transport },
-        };
-        setSnapshot(snap);
-
-        const { queuedId: qid } = await readingsSync.enqueue('local-car-demo', snap);
-        setQueuedId(qid);
-
-        setStatus('Готово. Данные ниже (синхронизация — заглушка).');
-        setStep('results');
+        await applyReadResults(device, session);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setStatus('Ошибка чтения');
@@ -152,7 +177,7 @@ export default function App() {
         setBusy(false);
       }
     },
-    [session],
+    [session, applyReadResults],
   );
 
   const reread = useCallback(async () => {
@@ -160,29 +185,9 @@ export default function App() {
     setBusy(true);
     setError(null);
     setStatus('Повторное чтение…');
+    setRawLog([]);
     try {
-      const vinResult = await session.readVin();
-      setVin(vinResult);
-      appendRaw(setRawLog, '0902', vinResult.raw);
-      const pidResult = await session.readStandardPids();
-      setPids(pidResult.parsed);
-      pidResult.raw.forEach((r) => appendRaw(setRawLog, r.command, r.raw));
-      const snap: ObdReadingSnapshot = {
-        recordedAt: new Date().toISOString(),
-        vin: vinResult.vin,
-        rpm: pidResult.rpm,
-        speedKmh: pidResult.speedKmh,
-        coolantTempC: pidResult.coolantTempC,
-        rawPids: pidResult.raw,
-        device: {
-          id: selected.id,
-          name: selected.name,
-          transport: selected.transport,
-        },
-      };
-      setSnapshot(snap);
-      const { queuedId: qid } = await readingsSync.enqueue('local-car-demo', snap);
-      setQueuedId(qid);
+      await applyReadResults(selected, session);
       setStatus('Готово (повтор).');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -190,7 +195,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [session, selected]);
+  }, [session, selected, applyReadResults]);
 
   const disconnect = useCallback(async () => {
     setBusy(true);
@@ -226,6 +231,9 @@ export default function App() {
         {step === 'transport' && (
           <View style={styles.block}>
             <Text style={styles.blockTitle}>1. Тип адаптера</Text>
+            <Text style={styles.hint}>
+              Для настоящей машины: Bluetooth Classic + сборка Dev Client. Симулятор — только демо в Expo Go.
+            </Text>
             {TRANSPORTS.map((t) => (
               <Pressable
                 key={t.kind}
@@ -254,6 +262,7 @@ export default function App() {
                 <Text style={styles.cardTitle}>{d.name}</Text>
                 <Text style={styles.cardHint}>
                   {d.address ?? d.id} · {d.transport}
+                  {d.meta?.bonded ? ' · спарен' : ''}
                 </Text>
               </Pressable>
             ))}
@@ -278,25 +287,68 @@ export default function App() {
               </View>
             )}
 
-            {pids.map((p) => (
-              <View key={p.pid} style={styles.metric}>
-                <Text style={styles.metricLabel}>
-                  {p.label} ({p.pid})
-                </Text>
-                <Text style={styles.metricValue}>
-                  {p.value === null || p.value === undefined ? '—' : `${p.value} ${p.unit}`}
-                </Text>
+            {dtc && (
+              <View style={styles.block}>
+                <Text style={styles.blockTitle}>Ошибки Check Engine (DTC)</Text>
+                {dtc.codes.length === 0 ? (
+                  <Text style={styles.hint}>{dtc.note ?? 'Активных кодов нет.'}</Text>
+                ) : (
+                  dtc.codes.map((c) => <DtcRow key={c.code} item={c} />)
+                )}
+                {dtc.codes.length > 0 && dtc.note ? (
+                  <Text style={styles.hint}>{dtc.note}</Text>
+                ) : null}
               </View>
-            ))}
+            )}
+
+            {pids.length > 0 && (
+              <View style={styles.block}>
+                <Text style={styles.blockTitle}>Параметры ({pids.length})</Text>
+                {supportedPids.length > 0 ? (
+                  <Text style={styles.hint}>
+                    ЭБУ заявил поддержку: {supportedPids.length} PID · читаем те, что умеем разобрать
+                  </Text>
+                ) : null}
+                {pids.map((p) => (
+                  <Pressable
+                    key={p.pid}
+                    style={styles.metric}
+                    onPress={() =>
+                      setExpandedRawPid((cur) => (cur === p.pid ? null : p.pid))
+                    }
+                  >
+                    <Text style={styles.metricLabel}>
+                      {p.label} ({p.pid})
+                    </Text>
+                    <Text style={styles.metricValue}>
+                      {p.value === null || p.value === undefined
+                        ? '—'
+                        : `${p.value}${p.unit ? ` ${p.unit}` : ''}`}
+                    </Text>
+                    {expandedRawPid === p.pid ? (
+                      <Text style={styles.monoSmall}>{p.raw.trim() || '(пусто)'}</Text>
+                    ) : (
+                      <Text style={styles.tapHint}>нажмите — сырой ответ</Text>
+                    )}
+                  </Pressable>
+                ))}
+              </View>
+            )}
 
             {rawLog.length > 0 && (
               <View style={styles.block}>
-                <Text style={styles.blockTitle}>Сырой ответ</Text>
-                {rawLog.map((line, i) => (
-                  <Text key={`${i}-${line.slice(0, 12)}`} style={styles.mono}>
-                    {line}
+                <Pressable onPress={() => setShowRaw((v) => !v)}>
+                  <Text style={styles.blockTitle}>
+                    Сырой лог {showRaw ? '▾' : '▸'} ({rawLog.length})
                   </Text>
-                ))}
+                </Pressable>
+                {showRaw
+                  ? rawLog.map((line, i) => (
+                      <Text key={`${i}-${line.slice(0, 12)}`} style={styles.mono}>
+                        {line}
+                      </Text>
+                    ))
+                  : null}
               </View>
             )}
 
@@ -318,12 +370,21 @@ export default function App() {
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>
-            Classic SPP — основной путь для дешёвых ELM327. BLE — только если адаптер реально BLE.
-            VIN с OBD ≠ расшифровка марки/модели (для этого внешние VIN API).
+            Classic SPP — основной путь для дешёвых ELM327. Expo Go = только симулятор. Живой адаптер:
+            npx expo run:android (Dev Client). VIN с OBD ≠ расшифровка марки (для этого внешние API).
           </Text>
         </View>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function DtcRow({ item }: { item: DtcCode }) {
+  return (
+    <View style={styles.dtcRow}>
+      <Text style={styles.dtcCode}>{item.code}</Text>
+      <Text style={styles.dtcDesc}>{item.descriptionRu ?? 'описание не найдено — смотрите код'}</Text>
+    </View>
   );
 }
 
@@ -332,7 +393,7 @@ function appendRaw(
   cmd: string,
   raw: string,
 ) {
-  setRawLog((prev) => [...prev, `> ${cmd}\n${raw.trim()}`]);
+  setRawLog((prev) => [...prev, `> ${cmd}\n${(raw || '').trim() || '(пусто)'}`]);
 }
 
 function Btn({
@@ -380,6 +441,7 @@ const styles = StyleSheet.create({
   content: { padding: 20, paddingBottom: 48, gap: 12 },
   status: { color: '#F2F3F5', fontSize: 16, fontWeight: '600' },
   hint: { color: '#9AA0A6', fontSize: 13, lineHeight: 18 },
+  tapHint: { color: '#6B7280', fontSize: 11, marginTop: 4 },
   error: {
     color: '#F87171',
     backgroundColor: '#3A2222',
@@ -424,10 +486,24 @@ const styles = StyleSheet.create({
   metricLabel: { color: '#9AA0A6', fontSize: 12 },
   metricValue: {
     color: '#F2F3F5',
-    fontSize: 22,
+    fontSize: 20,
     fontVariant: ['tabular-nums'],
     marginTop: 2,
   },
+  dtcRow: {
+    backgroundColor: '#2A2F36',
+    padding: 12,
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#F87171',
+  },
+  dtcCode: {
+    color: '#F87171',
+    fontSize: 18,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  dtcDesc: { color: '#C5C8CE', marginTop: 4, fontSize: 13 },
   mono: {
     fontFamily: 'monospace',
     color: '#C5C8CE',
@@ -436,6 +512,12 @@ const styles = StyleSheet.create({
     padding: 8,
     borderRadius: 6,
     overflow: 'hidden',
+  },
+  monoSmall: {
+    fontFamily: 'monospace',
+    color: '#9AA0A6',
+    fontSize: 11,
+    marginTop: 6,
   },
   footer: { marginTop: 24 },
   footerText: { color: '#6B7280', fontSize: 12, lineHeight: 17 },
